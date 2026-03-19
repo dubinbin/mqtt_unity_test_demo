@@ -1,0 +1,15 @@
+services:
+  emqx:
+    image: emqx/emqx:5.8.4
+    container_name: emqx
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # MQTT
+      - "18083:18083" # Dashboard
+    environment:
+      EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: admin
+
+      EMQX_ALLOW_ANONYMOUS: "false"
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database

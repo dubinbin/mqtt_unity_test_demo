@@ -1,0 +1,15 @@
+{
+  "name": "unity_terrain_mqtt",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "mqtt": "^5.15.0"
+  }
+}
