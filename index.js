@@ -3,6 +3,7 @@ const mqtt = require('mqtt');
 const broker = 'mqtt://localhost:1883';
 const topicRtk = '01/sensor/rtk_lio';
 const topicElev = '01/map/elevation';
+const topicJoints = '01/joints';
 
 // ====== Tile config (must match Unity TerrainTileManager) ======
 const tileSizeMeters = 100.0;
@@ -16,7 +17,13 @@ const elevationOrigin = Object.freeze({ x: Math.random() * 10, y: Math.random() 
 
 // ====== Publish rates ======
 const rtkHz = 5;                 // 5 Hz
+const jointsHz = 5;              // 5 Hz
 const elevIntervalMs = 5000;     // 2 s
+
+// Dynamic-terrain stability test. Each elevation message adds a broad, smooth
+// centimetre-level pulse around the excavator instead of changing random pixels.
+// Set to 0 to publish a completely static surface.
+const terrainPulseAmplitudeMeters = 0.03;
 
 // ====== Motion model ======
 const speedMps = 0.6;           // forward speed (m/s)
@@ -27,6 +34,7 @@ const client = mqtt.connect(broker);
 let t0 = Date.now();
 let lastRtkMs = Date.now();
 let elevationSequence = 0;
+let jointsSequence = 0;
 
 let state = {
   // relative ENU meters (x=east, y=north)
@@ -40,8 +48,45 @@ client.on('connect', () => {
   console.log('MQTT connected');
 
   // setInterval(publishRtk, Math.floor(1000 / rtkHz));
+  setInterval(publishJoints, Math.floor(1000 / jointsHz));
   setInterval(publishElevationForCurrentTile, elevIntervalMs);
 });
+
+function publishJoints() {
+  const now = Date.now();
+  const elapsedSeconds = (now - t0) / 1000.0;
+
+  // Smooth absolute angles relative to each parent link. The small phase offsets make
+  // it easy to verify boom -> stick -> bucket forward kinematics independently.
+  const boomAngle = 30.0 + 10.0 * Math.sin(elapsedSeconds * 0.35);
+  const stickAngle = 45.0 + 12.0 * Math.sin(elapsedSeconds * 0.42 + 0.8);
+  const bucketAngle = -15.0 + 18.0 * Math.sin(elapsedSeconds * 0.55 + 1.6);
+
+  const msg = {
+    timestamp: now / 1000,
+    joints: {
+      bucket: { angle: round3(bucketAngle), velocity: 0.0 },
+      stick: { angle: round3(stickAngle), velocity: 0.0 },
+      boom: { angle: round3(boomAngle), velocity: 0.0 },
+      // Unity intentionally ignores cabin and all velocity fields for now.
+      cabin: { angle: 90.0, velocity: 0.0 }
+    }
+  };
+
+  client.publish(topicJoints, JSON.stringify(msg), { qos: 0 }, (err) => {
+    if (err) {
+      console.error('joints publish failed:', err);
+      return;
+    }
+
+    if (jointsSequence++ % jointsHz === 0) {
+      console.log(
+        `joints published boom=${msg.joints.boom.angle} ` +
+        `stick=${msg.joints.stick.angle} bucket=${msg.joints.bucket.angle}`
+      );
+    }
+  });
+}
 
 function publishRtk() {
   const now = Date.now();
@@ -149,6 +194,11 @@ function generateElevationTile({ tile_x, tile_y, now, sequence }) {
       const bumpMask = Math.max(0.0, (n2 - 0.35) / 0.65); // 0..1-ish
       elevation += bumpMask * bumpMask * bumpsHeight;
 
+      // Broad temporal pulse near the map centre. This deliberately exercises
+      // Unity TerrainCollider updates under the excavator by only a few cm.
+      const pulseFalloff = Math.exp(-dist * dist * 2.0);
+      elevation += Math.sin(sequence * 0.8) * terrainPulseAmplitudeMeters * pulseFalloff;
+
       elevation = Math.max(minElevation, Math.min(maxElevation, elevation));
 
       data[y * width + x] = Math.round(elevation / height_resolution);
@@ -164,7 +214,7 @@ function generateElevationTile({ tile_x, tile_y, now, sequence }) {
       resolution,
       height_resolution,
       // Excavator offset from the elevation map center, in meters.
-      origin: { x: Math.random() * 10, y: Math.random() * 12, z: 0.0  },
+      origin: { ...elevationOrigin },
       origin_type: 'center',
       coordinate_system: 'global',
       frame_id: 'camera_init',
