@@ -13,7 +13,11 @@ const gridSize = 128;
 
 // Excavator position relative to the center of the elevation map (ENU, meters).
 // x=east, y=north, z=up
-const elevationOrigin = Object.freeze({ x: Math.random() * 10, y: Math.random() * 12, z: 0.0 });
+const elevationOrigin = Object.freeze({
+  x: Math.random() * 10,
+  y: Math.random() * 12,
+  z: 0.0
+});
 
 // ====== Publish rates ======
 const rtkHz = 5;                 // 5 Hz
@@ -28,13 +32,19 @@ const terrainPulseAmplitudeMeters = 0.03;
 // ====== Motion model ======
 const speedMps = 0.6;           // forward speed (m/s)
 const turnRateRad = 0.08;       // slow turn (rad/s)
+const cabinTurnRateDeg = 2.0;   // heading change speed (deg/s)
+const cabinMinTurnDeg = 8.0;    // minimum change before choosing a new heading
+const cabinMaxTurnDeg = 20.0;   // keep each random heading change small
 
 const client = mqtt.connect(broker);
 
 let t0 = Date.now();
 let lastRtkMs = Date.now();
+let lastJointsMs = Date.now();
 let elevationSequence = 0;
 let jointsSequence = 0;
+let cabinHeadingDeg = Math.random() * 360.0;
+let cabinTargetHeadingDeg = cabinHeadingDeg + randomCabinTurnDeg();
 
 let state = {
   // relative ENU meters (x=east, y=north)
@@ -55,7 +65,20 @@ client.on('connect', () => {
 function publishJoints() {
   const now = Date.now();
   const elapsedSeconds = (now - t0) / 1000.0;
+  const dt = Math.min((now - lastJointsMs) / 1000.0, 1.0);
+  lastJointsMs = now;
 
+  // Compass heading in degrees: 0=north, 90=east, increasing clockwise.
+  // Move towards a nearby random target at a fixed speed instead of generating
+  // a new random value per message, which would make the digital twin jitter.
+  const maxHeadingStep = cabinTurnRateDeg * dt;
+  const headingError = cabinTargetHeadingDeg - cabinHeadingDeg;
+  if (Math.abs(headingError) <= maxHeadingStep) {
+    cabinHeadingDeg = cabinTargetHeadingDeg;
+    cabinTargetHeadingDeg = cabinHeadingDeg + randomCabinTurnDeg();
+  } else {
+    cabinHeadingDeg += Math.sign(headingError) * maxHeadingStep;
+  }
   // Smooth absolute angles relative to each parent link. The small phase offsets make
   // it easy to verify boom -> stick -> bucket forward kinematics independently.
   const boomAngle = 30.0 + 10.0 * Math.sin(elapsedSeconds * 0.35);
@@ -68,7 +91,6 @@ function publishJoints() {
       bucket: { angle: round3(bucketAngle), velocity: 0.0 },
       stick: { angle: round3(stickAngle), velocity: 0.0 },
       boom: { angle: round3(boomAngle), velocity: 0.0 },
-      // Unity intentionally ignores cabin and all velocity fields for now.
       cabin: { angle: 90.0, velocity: 0.0 }
     }
   };
@@ -80,10 +102,7 @@ function publishJoints() {
     }
 
     if (jointsSequence++ % jointsHz === 0) {
-      console.log(
-        `joints published boom=${msg.joints.boom.angle} ` +
-        `stick=${msg.joints.stick.angle} bucket=${msg.joints.bucket.angle}`
-      );
+      console.log(`${JSON.stringify(msg)}`);
     }
   });
 }
@@ -214,7 +233,11 @@ function generateElevationTile({ tile_x, tile_y, now, sequence }) {
       resolution,
       height_resolution,
       // Excavator offset from the elevation map center, in meters.
-      origin: { ...elevationOrigin },
+      // yaw is ENU orientation in radians: 0=east, increasing counter-clockwise.
+      origin: {
+        ...elevationOrigin,
+        yaw: round6(compassHeadingDegToEnuYawRad(cabinHeadingDeg))
+      },
       origin_type: 'center',
       coordinate_system: 'global',
       frame_id: 'camera_init',
@@ -296,6 +319,25 @@ function yawToEnuQuaternion(yawRad) {
   return { x: 0.0, y: 0.0, z: Math.sin(half), w: Math.cos(half) };
 }
 
+function randomCabinTurnDeg() {
+  const magnitude =
+    cabinMinTurnDeg + Math.random() * (cabinMaxTurnDeg - cabinMinTurnDeg);
+  return (Math.random() < 0.5 ? -1.0 : 1.0) * magnitude;
+}
+
+function normalizeHeadingDeg(headingDeg) {
+  return ((headingDeg % 360.0) + 360.0) % 360.0;
+}
+
+function compassHeadingDegToEnuYawRad(headingDeg) {
+  const yawRad = (90.0 - normalizeHeadingDeg(headingDeg)) * Math.PI / 180.0;
+  return Math.atan2(Math.sin(yawRad), Math.cos(yawRad));
+}
+
 function round3(v) {
   return Math.round(v * 1000) / 1000;
+}
+
+function round6(v) {
+  return Math.round(v * 1000000) / 1000000;
 }
