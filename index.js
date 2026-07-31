@@ -1,7 +1,6 @@
 const mqtt = require('mqtt');
 
 const broker = 'mqtt://localhost:1883';
-const topicRtk = '01/sensor/rtk_lio';
 const topicElev = '01/map/elevation';
 const topicJoints = '01/joints';
 
@@ -88,9 +87,9 @@ function publishJoints() {
   const msg = {
     timestamp: now / 1000,
     joints: {
-      bucket: { angle: round3(bucketAngle), velocity: 0.0 },
-      stick: { angle: round3(stickAngle), velocity: 0.0 },
-      boom: { angle: round3(boomAngle), velocity: 0.0 },
+      bucket: { angle: round3(bucketAngle) > 0 ? -round3(bucketAngle) : round3(bucketAngle), velocity: 0.0 },
+      stick: { angle: -round3(stickAngle), velocity: 0.0 },
+      boom: { angle: -round3(boomAngle), velocity: 0.0 },
       cabin: { angle: 90.0, velocity: 0.0 }
     }
   };
@@ -105,46 +104,6 @@ function publishJoints() {
       console.log(`${JSON.stringify(msg)}`);
     }
   });
-}
-
-function publishRtk() {
-  const now = Date.now();
-  const dt = (now - lastRtkMs) / 1000.0;
-  lastRtkMs = now;
-
-  // smooth motion (no teleport)
-  state.heading += turnRateRad * dt;
-  const vx = speedMps * Math.sin(state.heading); // east
-  const vy = speedMps * Math.cos(state.heading); // north
-
-  state.x += vx * dt;
-  state.y += vy * dt;
-
-  const q = yawToEnuQuaternion(state.heading);
-
-  const msg = {
-    timestamp: now / 1000,
-    rtk_status: {
-      fix_type: 'fixed',
-      satellites_used: 18,
-      age: 0.05,
-      accuracy: { horizontal: 0.015, vertical: 0.025 }
-    },
-    position: {
-      global: {
-        latitude: 22.7557479,
-        longitude: 113.5515704,
-        altitude: 15.678
-      },
-      relative: {
-        translation: { x: round3(state.x), y: round3(state.y), z: round3(state.z) }
-      }
-    },
-    rotation: q,
-    velocity: { x: round3(vx), y: round3(vy), z: 0.0 }
-  };
-
-  client.publish(topicRtk, JSON.stringify(msg), { qos: 0 });
 }
 
 function publishElevationForCurrentTile() {
@@ -235,7 +194,9 @@ function generateElevationTile({ tile_x, tile_y, now, sequence }) {
       // Excavator offset from the elevation map center, in meters.
       // yaw is ENU orientation in radians: 0=east, increasing counter-clockwise.
       origin: {
-        ...elevationOrigin,
+         x: Math.random() * 10,
+        y: Math.random() * 12,
+        z: 0.0,
         yaw: round6(compassHeadingDegToEnuYawRad(cabinHeadingDeg))
       },
       origin_type: 'center',
